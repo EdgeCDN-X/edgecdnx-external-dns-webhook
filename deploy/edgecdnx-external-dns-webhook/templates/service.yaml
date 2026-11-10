@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "edgecdnx-external-dns-webhook.fullname" . }}
+  labels:
+    {{- include "edgecdnx-external-dns-webhook.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: webhook
+      port: {{ .Values.service.port }}
+      targetPort: webhook
+      protocol: TCP
+  selector:
+    {{- include "edgecdnx-external-dns-webhook.selectorLabels" . | nindent 4 }}

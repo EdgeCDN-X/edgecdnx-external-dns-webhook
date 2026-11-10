@@ -1,0 +1,36 @@
+replicaCount: 1
+
+edgecdnx:
+  projectID: ""
+  apiURL: https://api.edgecdnx.com
+  apiKeySecretRef:
+    name: edgecdnx-api-key
+    key: api-key
+
+image:
+  repository: ghcr.io/edgecdn-x/edgecdnx-external-dns-webhook
+  tag: ""
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8888
+
+externalDNS:
+  namespace: kube-system
+  podSelector:
+    app.kubernetes.io/name: external-dns
+
+networkPolicy:
+  enabled: true
+
+nameOverride: ""
+fullnameOverride: ""
+
+resources: {}
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
