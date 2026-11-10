@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,6 +16,7 @@ type config struct {
 	apiURL        string
 	apiKey        string
 	projectID     string
+	logLevel      slog.Level
 }
 
 func configFromEnv() (config, error) {
@@ -41,11 +43,19 @@ func configFromEnv() (config, error) {
 		return config{}, errors.New("EDGECDNX_PROJECT_ID must contain a valid Project ID")
 	}
 
+	logLevel := slog.LevelInfo
+	if rawLevel := os.Getenv("LOG_LEVEL"); rawLevel != "" {
+		if err := logLevel.UnmarshalText([]byte(rawLevel)); err != nil {
+			return config{}, errors.New("LOG_LEVEL must be one of debug, info, warn, error")
+		}
+	}
+
 	return config{
 		listenAddress: listenAddress,
 		apiURL:        strings.TrimRight(apiURL, "/"),
 		apiKey:        apiKey,
 		projectID:     projectID,
+		logLevel:      logLevel,
 	}, nil
 }
 

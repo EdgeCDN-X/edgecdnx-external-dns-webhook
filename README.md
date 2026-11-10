@@ -42,6 +42,7 @@ The process requires these environment variables:
 | `EDGECDNX_PROJECT_ID` | yes | — | Project metadata name |
 | `EDGECDNX_API_KEY` | yes | — | Project-scoped API key |
 | `WEBHOOK_LISTEN_ADDRESS` | no | `0.0.0.0:8888` | HTTP listen address |
+| `LOG_LEVEL` | no | `info` | Log level: `debug`, `info`, `warn`, or `error` |
 
 For example:
 
@@ -57,6 +58,16 @@ Helm values, command-line arguments, logs, or a committed Secret manifest.
 Redirects are rejected, TLS certificate validation is enabled, and outgoing API
 requests have a 10-second timeout. The API key is sent only to the configured
 EdgeCDN-X API URL.
+
+### Debug logging
+
+Set `LOG_LEVEL=debug` to log every incoming ExternalDNS webhook request
+(method, path, status, duration, decoded change sets) and every EdgeCDN-X API
+request and response, including bodies, HTTP status and duration. Health probe
+requests to `/healthz` are not logged. The API key is never logged at any
+level: the `Authorization` header is never printed, and any logged request or
+response text has occurrences of the key redacted. DNS endpoint data appears in
+debug logs; it is public DNS data, not credentials.
 
 ## ExternalDNS deployment
 

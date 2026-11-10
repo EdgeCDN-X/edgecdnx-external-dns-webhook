@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -31,7 +32,43 @@ func newWebhookServer(provider *provider) http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	return mux
+	return logRequests(mux)
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+// logRequests logs incoming webhook requests at debug level. Health probes are
+// skipped to keep debug output readable.
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" || !slog.Default().Enabled(r.Context(), slog.LevelDebug) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		start := time.Now()
+		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(recorder, r)
+		slog.DebugContext(r.Context(), "webhook request", "method", r.Method, "path", r.URL.Path,
+			"remoteAddr", r.RemoteAddr, "status", recorder.status, "duration", time.Since(start))
+	})
+}
+
+// endpointSummaries renders endpoints for debug logs; DNS data contains no credentials.
+func endpointSummaries(endpoints []endpoint) []string {
+	summaries := make([]string, 0, len(endpoints))
+	for _, e := range endpoints {
+		summaries = append(summaries, fmt.Sprintf("%s %s TTL=%d -> %s",
+			e.RecordType, e.DNSName, e.RecordTTL, strings.Join(e.Targets, ",")))
+	}
+	return summaries
 }
 
 func (s *webhookServer) negotiate(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +89,7 @@ func (s *webhookServer) negotiate(w http.ResponseWriter, r *http.Request) {
 	for _, zone := range zones {
 		filters = append(filters, "."+zone.Spec.Zone)
 	}
+	slog.DebugContext(r.Context(), "webhook negotiation", "filters", filters)
 	writeJSON(w, http.StatusOK, map[string][]string{"filters": filters})
 }
 
@@ -67,6 +105,7 @@ func (s *webhookServer) records(w http.ResponseWriter, r *http.Request) {
 			writeProviderError(w, err)
 			return
 		}
+		slog.DebugContext(r.Context(), "webhook list records", "count", len(records))
 		writeJSON(w, http.StatusOK, records)
 	case http.MethodPost:
 		if !hasWebhookContentType(r.Header.Get("Content-Type")) {
@@ -77,6 +116,13 @@ func (s *webhookServer) records(w http.ResponseWriter, r *http.Request) {
 		if err := decodeBody(w, r, &request); err != nil {
 			writeDecodeError(w, err)
 			return
+		}
+		if slog.Default().Enabled(r.Context(), slog.LevelDebug) {
+			slog.DebugContext(r.Context(), "webhook apply changes",
+				"create", endpointSummaries(request.Create),
+				"updateOld", endpointSummaries(request.UpdateOld),
+				"updateNew", endpointSummaries(request.UpdateNew),
+				"delete", endpointSummaries(request.Delete))
 		}
 		if err := s.provider.apply(r.Context(), request); err != nil {
 			writeProviderError(w, err)
@@ -103,6 +149,9 @@ func (s *webhookServer) adjustEndpoints(w http.ResponseWriter, r *http.Request) 
 	if err := decodeBody(w, r, &endpoints); err != nil {
 		writeDecodeError(w, err)
 		return
+	}
+	if slog.Default().Enabled(r.Context(), slog.LevelDebug) {
+		slog.DebugContext(r.Context(), "webhook adjust endpoints", "endpoints", endpointSummaries(endpoints))
 	}
 	writeJSON(w, http.StatusOK, endpoints)
 }
