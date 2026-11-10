@@ -41,7 +41,7 @@ The process requires these environment variables:
 | `EDGECDNX_API_URL` | yes | — | Absolute EdgeCDN-X API URL, for example `https://api.edgecdnx.com` |
 | `EDGECDNX_PROJECT_ID` | yes | — | Project metadata name |
 | `EDGECDNX_API_KEY` | yes | — | Project-scoped API key |
-| `WEBHOOK_LISTEN_ADDRESS` | no | `:8888` | HTTP listen address |
+| `WEBHOOK_LISTEN_ADDRESS` | no | `0.0.0.0:8888` | HTTP listen address |
 
 For example:
 
@@ -61,8 +61,9 @@ EdgeCDN-X API URL.
 ## ExternalDNS deployment
 
 The ExternalDNS webhook specification recommends running the provider as a
-sidecar and listening only on localhost. This keeps the unauthenticated webhook
-API and its write capability private to the ExternalDNS pod. Configure the
+sidecar and listening only on localhost. For a separate in-cluster deployment,
+the default `0.0.0.0:8888` listen address allows ExternalDNS pods to reach the
+webhook through its Service; restrict access with NetworkPolicy. Configure the
 ExternalDNS container with:
 
 ```yaml
@@ -71,20 +72,24 @@ args:
   - --webhook-provider-url=http://localhost:8888
 ```
 
-Run the webhook sidecar with the environment above and
-`WEBHOOK_LISTEN_ADDRESS=127.0.0.1:8888`. Ensure the ExternalDNS deployment has
-the Project's API key in a Secret reference.
+For a sidecar, set `WEBHOOK_LISTEN_ADDRESS=127.0.0.1:8888` instead. Ensure the
+ExternalDNS deployment has the Project's API key in a Secret reference.
 
-A Helm chart is also included at [`deploy/edgecdnx-external-dns-webhook`](./deploy/edgecdnx-external-dns-webhook)
-for deployments where a separate in-cluster service is required. Its NetworkPolicy
-restricts ingress to the configured ExternalDNS namespace and pod labels by
-default; verify that your CNI enforces NetworkPolicy before using this mode.
+A Helm chart is published in the
+[EdgeCDN-X Helm charts repository](https://github.com/EdgeCDN-X/helm-charts/tree/main/charts/edgecdnx-external-dns-webhook)
+for deployments where a separate in-cluster service is required. Its
+NetworkPolicy restricts ingress to the configured ExternalDNS namespace and pod
+labels by default; verify that your CNI enforces NetworkPolicy before using
+this mode.
 
-Install the chart after creating the API key Secret:
+Add the chart repository and install the chart after creating the API key
+Secret:
 
 ```sh
+helm repo add edgecdnx https://edgecdn-x.github.io/helm-charts/
+helm repo update
 helm upgrade --install edgecdnx-external-dns-webhook \
-  ./deploy/edgecdnx-external-dns-webhook \
+  edgecdnx/edgecdnx-external-dns-webhook \
   --namespace external-dns --create-namespace \
   --set edgecdnx.projectID=my-project \
   --set edgecdnx.apiURL=https://api.edgecdnx.com \

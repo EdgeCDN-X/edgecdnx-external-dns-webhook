@@ -423,7 +423,7 @@ func validResourceID(id string) bool {
 }
 
 func validZone(name string) bool {
-	return validDNSName(name) && !strings.Contains(name, "_")
+	return validDNSSubdomain(name)
 }
 
 func validDNSName(name string) bool {
@@ -431,7 +431,10 @@ func validDNSName(name string) bool {
 		return false
 	}
 	labels := strings.Split(name, ".")
-	for _, label := range labels {
+	for index, label := range labels {
+		if index == 0 && label == "*" && len(labels) > 1 {
+			continue
+		}
 		if len(label) == 0 || len(label) > 63 ||
 			label[0] == '-' || label[len(label)-1] == '-' {
 			return false

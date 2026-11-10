@@ -1,6 +1,0 @@
-apiVersion: v2
-name: edgecdnx-external-dns-webhook
-description: ExternalDNS webhook provider for the EdgeCDN-X API
-type: application
-version: 0.1.0
-appVersion: "0.1.0"

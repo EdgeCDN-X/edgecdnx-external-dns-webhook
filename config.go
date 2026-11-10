@@ -20,7 +20,7 @@ type config struct {
 func configFromEnv() (config, error) {
 	listenAddress := os.Getenv("WEBHOOK_LISTEN_ADDRESS")
 	if listenAddress == "" {
-		listenAddress = ":8888"
+		listenAddress = "0.0.0.0:8888"
 	}
 
 	apiURL := os.Getenv("EDGECDNX_API_URL")
