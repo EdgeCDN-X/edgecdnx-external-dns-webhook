@@ -57,6 +57,13 @@ type changes struct {
 	Delete    []endpoint `json:"delete"`
 }
 
+// setIdentifierMarkerPrefix marks the extra TXT target that persists the
+// setIdentifier of ExternalDNS TXT registry records. The DNSEndpoint API has
+// no setIdentifier field, and ownership matching in the TXT registry requires
+// the identifier to round-trip, so it is stored as an additional TXT string
+// and stripped again when listing records.
+const setIdentifierMarkerPrefix = "edgecdnx-set-identifier="
+
 func newProvider(cfg config) (*provider, error) {
 	if err := validateAPIConfig(cfg); err != nil {
 		return nil, err
@@ -113,12 +120,29 @@ func (p *provider) records(ctx context.Context) ([]endpoint, error) {
 		return nil, err
 	}
 	records := make([]endpoint, 0)
+	var locations []v1alpha1.Location
+	var profiles map[string]v1alpha1.HealthCheckProfile
+	managedFetched := false
 	for _, zone := range zones {
 		apiRecords, err := p.api.DNSRecords.List(ctx, p.projectID, zone.Name)
 		if err != nil {
 			return nil, fmt.Errorf("fetch DNS endpoints for zone %q: %w", zone.Spec.Zone, safeAPIError(err))
 		}
 		for _, record := range apiRecords {
+			if isManagedPolicy(record.Spec.RoutingPolicy) {
+				if !dnsNameBelongsToZone(normalizeDNSName(record.Spec.DNSName), zone.Spec.Zone) {
+					return nil, fmt.Errorf("DNS endpoint %q is outside zone %q", record.Name, zone.Spec.Zone)
+				}
+				if !managedFetched {
+					locations, profiles, err = p.managedState(ctx)
+					if err != nil {
+						return nil, err
+					}
+					managedFetched = true
+				}
+				records = append(records, managedEndpointsFromRecord(record, locations, profiles)...)
+				continue
+			}
 			converted, include, err := endpointFromAPI(record)
 			if err != nil {
 				return nil, fmt.Errorf("convert DNS endpoint %q: %w", record.Name, err)
@@ -133,6 +157,24 @@ func (p *provider) records(ctx context.Context) ([]endpoint, error) {
 		}
 	}
 	return records, nil
+}
+
+// managedState fetches the project's Locations and HealthCheckProfiles once
+// per listing, for reconstructing managed endpoints.
+func (p *provider) managedState(ctx context.Context) ([]v1alpha1.Location, map[string]v1alpha1.HealthCheckProfile, error) {
+	locations, err := p.api.Locations.List(ctx, p.projectID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch Project locations: %w", safeAPIError(err))
+	}
+	profileList, err := p.api.HealthCheckProfiles.List(ctx, p.projectID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch Project health check profiles: %w", safeAPIError(err))
+	}
+	profiles := make(map[string]v1alpha1.HealthCheckProfile, len(profileList))
+	for _, profile := range profileList {
+		profiles[profile.Name] = profile
+	}
+	return locations, profiles, nil
 }
 
 func endpointFromAPI(record apiRecord) (endpoint, bool, error) {
@@ -154,12 +196,38 @@ func endpointFromAPI(record apiRecord) (endpoint, bool, error) {
 	if len(spec.Targets) == 0 {
 		return endpoint{}, false, errors.New("record has no targets")
 	}
-	return endpoint{
+	converted := endpoint{
 		DNSName:    dnsName,
 		Targets:    append([]string(nil), spec.Targets...),
 		RecordType: recordType,
 		RecordTTL:  int64(spec.RecordTTL),
-	}, true, nil
+	}
+	if recordType == "TXT" {
+		targets, setIdentifier := splitSetIdentifierMarker(converted.Targets)
+		if len(targets) == 0 {
+			return endpoint{}, false, errors.New("record has no targets")
+		}
+		converted.Targets = targets
+		converted.SetIdentifier = setIdentifier
+	}
+	return converted, true, nil
+}
+
+// splitSetIdentifierMarker extracts the persisted setIdentifier from the
+// targets of a stored TXT record.
+func splitSetIdentifierMarker(targets []string) ([]string, string) {
+	kept := make([]string, 0, len(targets))
+	setIdentifier := ""
+	for _, target := range targets {
+		if value, found := strings.CutPrefix(target, setIdentifierMarkerPrefix); found {
+			if setIdentifier == "" {
+				setIdentifier = value
+			}
+			continue
+		}
+		kept = append(kept, target)
+	}
+	return kept, setIdentifier
 }
 
 func (p *provider) matchZone(zones []apiZone, dnsName string) (apiZone, error) {
@@ -177,6 +245,25 @@ func (p *provider) apply(ctx context.Context, changes changes) error {
 		return permanentError("updateOld and updateNew endpoint counts do not match")
 	}
 
+	// Validate every endpoint's routing annotations before mutating anything,
+	// so a malformed batch fails atomically with 400.
+	createCfgs, err := parseConfigs(changes.Create)
+	if err != nil {
+		return err
+	}
+	updateOldCfgs, err := parseConfigs(changes.UpdateOld)
+	if err != nil {
+		return err
+	}
+	updateNewCfgs, err := parseConfigs(changes.UpdateNew)
+	if err != nil {
+		return err
+	}
+	deleteCfgs, err := parseConfigs(changes.Delete)
+	if err != nil {
+		return err
+	}
+
 	zones, err := p.zones(ctx)
 	if err != nil {
 		return err
@@ -185,30 +272,73 @@ func (p *provider) apply(ctx context.Context, changes changes) error {
 	for i, oldEndpoint := range changes.UpdateOld {
 		newEndpoint := changes.UpdateNew[i]
 		if sameEndpointIdentity(oldEndpoint, newEndpoint) {
-			err = p.updateEndpoint(ctx, zones, newEndpoint)
+			if updateNewCfgs[i].managed() {
+				err = p.createManagedEndpoint(ctx, zones, newEndpoint, updateNewCfgs[i])
+			} else {
+				err = p.updateEndpoint(ctx, zones, newEndpoint)
+			}
 			if err != nil {
 				return err
 			}
 			continue
 		}
-		if err := p.createEndpoint(ctx, zones, newEndpoint); err != nil {
+		sameKey := normalizeDNSName(oldEndpoint.DNSName) == normalizeDNSName(newEndpoint.DNSName) &&
+			strings.EqualFold(oldEndpoint.RecordType, newEndpoint.RecordType)
+		if sameKey && (updateOldCfgs[i].managed() || updateNewCfgs[i].managed()) {
+			// The record changes identity or routing mode in place; remove the
+			// old definition first so the new one does not conflict on create.
+			if err := p.deleteAnyEndpoint(ctx, zones, oldEndpoint, updateOldCfgs[i]); err != nil {
+				return err
+			}
+			if err := p.createAnyEndpoint(ctx, zones, newEndpoint, updateNewCfgs[i]); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := p.createAnyEndpoint(ctx, zones, newEndpoint, updateNewCfgs[i]); err != nil {
 			return err
 		}
-		if err := p.deleteEndpoint(ctx, zones, oldEndpoint); err != nil {
+		if err := p.deleteAnyEndpoint(ctx, zones, oldEndpoint, updateOldCfgs[i]); err != nil {
 			return err
 		}
 	}
-	for _, record := range changes.Create {
-		if err := p.createEndpoint(ctx, zones, record); err != nil {
+	for i, record := range changes.Create {
+		if err := p.createAnyEndpoint(ctx, zones, record, createCfgs[i]); err != nil {
 			return err
 		}
 	}
-	for _, record := range changes.Delete {
-		if err := p.deleteEndpoint(ctx, zones, record); err != nil {
+	for i, record := range changes.Delete {
+		if err := p.deleteAnyEndpoint(ctx, zones, record, deleteCfgs[i]); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func parseConfigs(endpoints []endpoint) ([]*routingConfig, error) {
+	configs := make([]*routingConfig, len(endpoints))
+	for i := range endpoints {
+		cfg, err := parseRoutingConfig(endpoints[i])
+		if err != nil {
+			return nil, err
+		}
+		configs[i] = cfg
+	}
+	return configs, nil
+}
+
+func (p *provider) createAnyEndpoint(ctx context.Context, zones []apiZone, record endpoint, cfg *routingConfig) error {
+	if cfg.managed() {
+		return p.createManagedEndpoint(ctx, zones, record, cfg)
+	}
+	return p.createEndpoint(ctx, zones, record)
+}
+
+func (p *provider) deleteAnyEndpoint(ctx context.Context, zones []apiZone, record endpoint, cfg *routingConfig) error {
+	if cfg.managed() {
+		return p.deleteManagedEndpoint(ctx, zones, record, cfg)
+	}
+	return p.deleteEndpoint(ctx, zones, record)
 }
 
 func (p *provider) createEndpoint(ctx context.Context, zones []apiZone, record endpoint) error {
@@ -340,8 +470,16 @@ func (p *provider) toAPIRecord(zones []apiZone, record endpoint) (apiZone, apiRe
 			return apiZone{}, apiRecordSpec{}, permanentError("DNS endpoint %q has an empty target", dnsName)
 		}
 	}
+	targets := append([]string(nil), record.Targets...)
 	if record.SetIdentifier != "" {
-		return apiZone{}, apiRecordSpec{}, permanentError("setIdentifier is not supported for DNS endpoint %q", dnsName)
+		if recordType != "TXT" {
+			return apiZone{}, apiRecordSpec{}, permanentError("setIdentifier is not supported for %s DNS endpoint %q", recordType, dnsName)
+		}
+		if !validDNSSubdomain(record.SetIdentifier) {
+			return apiZone{}, apiRecordSpec{}, permanentError("setIdentifier %q of DNS endpoint %q must be a valid DNS-1123 subdomain", record.SetIdentifier, dnsName)
+		}
+		// Persist the TXT registry record's setIdentifier as an extra target.
+		targets = append(targets, setIdentifierMarkerPrefix+record.SetIdentifier)
 	}
 	zone, err := p.matchZone(zones, dnsName)
 	if err != nil {
@@ -356,7 +494,7 @@ func (p *provider) toAPIRecord(zones []apiZone, record endpoint) (apiZone, apiRe
 		RecordType:    recordType,
 		RecordTTL:     int(ttl),
 		RoutingPolicy: "Simple",
-		Targets:       append([]string(nil), record.Targets...),
+		Targets:       targets,
 	}, nil
 }
 

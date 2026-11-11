@@ -112,6 +112,52 @@ Set `externalDNS.namespace` and `externalDNS.podSelector` to the namespace and
 labels on the ExternalDNS pods. The default selector is
 `app.kubernetes.io/name=external-dns` in namespace `kube-system`.
 
+## Routing policies via annotations
+
+Beyond plain `Simple` records, the webhook can provision the full EdgeCDN-X
+routing stack (DNSEndpoint + Location + optional HealthCheckProfile) from
+Ingress/Route annotations. See
+[docs/routing-policies-plan.md](docs/routing-policies-plan.md) for the design
+and multi-cluster walkthroughs.
+
+```yaml
+metadata:
+  annotations:
+    external-dns.alpha.kubernetes.io/set-identifier: k8s-fra
+    external-dns.alpha.kubernetes.io/webhook-edgecdnx-routing: geo
+    external-dns.alpha.kubernetes.io/webhook-edgecdnx-continents: EU
+    external-dns.alpha.kubernetes.io/webhook-edgecdnx-countries: DE,AT,CH
+    external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-endpoint: /healthz
+    external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-protocol: https
+    external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-port: "443"
+```
+
+| Annotation (suffix of `external-dns.alpha.kubernetes.io/webhook-`) | Value |
+|---|---|
+| `edgecdnx-routing` | `simple` (default), `geo`, `wrr`, `rr`, `failover` |
+| `edgecdnx-weight` | required for `wrr`: integer `0..1000` |
+| `edgecdnx-continents` | `geo`: comma-delimited continent codes (`EU,NA`, ...) |
+| `edgecdnx-countries` | `geo`: comma-delimited ISO country codes (`SK,HU`, ...) |
+| `edgecdnx-fallback` | `failover`: fallback location name (required for primary) |
+| `edgecdnx-failover-role` | `failover`: `primary` (default) or `secondary` |
+| `edgecdnx-health-endpoint` | HTTP(S) health check path, e.g. `/healthz` |
+| `edgecdnx-health-protocol` | `http` (default) or `https` |
+| `edgecdnx-health-port` | health check port (defaults to 80/443 by protocol) |
+
+Rules:
+
+- Non-simple routing requires the standard
+  `external-dns.alpha.kubernetes.io/set-identifier` annotation (it becomes the
+  Location name) and works for `A`/`AAAA` records only. Violations are rejected
+  with HTTP 400.
+- Locations created by the webhook are labelled
+  `app.kubernetes.io/managed-by: edgecdnx-external-dns-webhook` and
+  `dns.edgecdnx.com/endpoint: <hostname>`; existing Locations without these
+  labels are never adopted, modified, or deleted.
+- Multiple clusters can publish the same hostname with distinct
+  set-identifiers; they converge on one shared DNSEndpoint. Each cluster's
+  ExternalDNS must run with a distinct `--txt-owner-id` **and** `--txt-prefix`.
+
 ## Protocol and limitations
 
 - Supports ExternalDNS webhook media type `application/external.dns.webhook+json;version=1`.
@@ -123,9 +169,12 @@ labels on the ExternalDNS pods. The default selector is
   the most-specific matching Project Zone and DNS label boundaries.
 - TTL `0` from ExternalDNS (no `external-dns.alpha.kubernetes.io/ttl`
   annotation) is stored as-is; resolvers will not cache such records.
-- `setIdentifier` and non-Simple routing policies cannot be represented by the
-  EdgeCDN-X API mapping and are rejected on writes.
-- `labels` and `providerSpecific` are currently not persisted by the API.
+- `setIdentifier` is supported together with the `edgecdnx-routing` annotations
+  (non-Simple routing) and on TXT registry records, where it is persisted as an
+  extra `edgecdnx-set-identifier=<id>` TXT string. It is rejected on plain
+  Simple records.
+- `labels` and other `providerSpecific` properties are currently not persisted
+  by the API.
 
 ## Development
 

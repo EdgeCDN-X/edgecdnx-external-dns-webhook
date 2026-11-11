@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	v1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
+	edgecdnx "github.com/EdgeCDN-X/edgecdnx-sdk-go"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -239,13 +240,20 @@ func testProvider(t *testing.T, apiURL string) *provider {
 }
 
 type fakeAPI struct {
-	mu      sync.Mutex
-	records map[string]apiRecord
-	nextRV  int
+	mu        sync.Mutex
+	records   map[string]apiRecord
+	locations map[string]v1alpha1.Location
+	profiles  map[string]v1alpha1.HealthCheckProfile
+	nextRV    int
 }
 
 func newFakeAPI() *fakeAPI {
-	return &fakeAPI{records: make(map[string]apiRecord), nextRV: 3}
+	return &fakeAPI{
+		records:   make(map[string]apiRecord),
+		locations: make(map[string]v1alpha1.Location),
+		profiles:  make(map[string]v1alpha1.HealthCheckProfile),
+		nextRV:    3,
+	}
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -256,6 +264,14 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) == 3 && parts[0] == "project" && parts[1] == "test-project" && parts[2] == "zones" && r.Method == http.MethodGet {
 		writeJSON(w, http.StatusOK, []apiZone{testZone()})
+		return
+	}
+	if len(parts) >= 3 && parts[0] == "project" && parts[1] == "test-project" && parts[2] == "locations" {
+		f.serveLocations(w, r, parts[3:])
+		return
+	}
+	if len(parts) >= 3 && parts[0] == "project" && parts[1] == "test-project" && parts[2] == "healthcheckprofiles" {
+		f.serveProfiles(w, r, parts[3:])
 		return
 	}
 	if len(parts) < 5 || parts[0] != "project" || parts[1] != "test-project" ||
@@ -305,9 +321,11 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, record)
 	case http.MethodPatch:
 		var patch struct {
-			ResourceVersion string   `json:"resourceVersion"`
-			RecordTTL       int      `json:"recordTTL"`
-			Targets         []string `json:"targets"`
+			ResourceVersion string                `json:"resourceVersion"`
+			RecordTTL       *int                  `json:"recordTTL"`
+			Targets         []string              `json:"targets"`
+			RoutingPolicy   string                `json:"routingPolicy"`
+			RouteSelector   *metav1.LabelSelector `json:"routeSelector"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -317,8 +335,18 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "stale version"})
 			return
 		}
-		record.Spec.RecordTTL = patch.RecordTTL
-		record.Spec.Targets = patch.Targets
+		if patch.RecordTTL != nil {
+			record.Spec.RecordTTL = *patch.RecordTTL
+		}
+		if patch.Targets != nil {
+			record.Spec.Targets = patch.Targets
+		}
+		if patch.RoutingPolicy != "" {
+			record.Spec.RoutingPolicy = patch.RoutingPolicy
+		}
+		if patch.RouteSelector != nil {
+			record.Spec.RouteSelector = patch.RouteSelector
+		}
 		record.ResourceVersion = f.version()
 		f.records[name] = record
 		writeJSON(w, http.StatusOK, record)
@@ -338,6 +366,141 @@ func (f *fakeAPI) version() string {
 	version := f.nextRV
 	f.nextRV++
 	return fmt.Sprint(version)
+}
+
+func (f *fakeAPI) serveLocations(w http.ResponseWriter, r *http.Request, rest []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case len(rest) == 0 && r.Method == http.MethodGet:
+		locations := make([]v1alpha1.Location, 0, len(f.locations))
+		for _, location := range f.locations {
+			locations = append(locations, location)
+		}
+		writeJSON(w, http.StatusOK, locations)
+	case len(rest) == 0 && r.Method == http.MethodPost:
+		var request edgecdnx.CreateLocationRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+			return
+		}
+		if _, exists := f.locations[request.Name]; exists {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "already exists"})
+			return
+		}
+		location := v1alpha1.Location{
+			ObjectMeta: metav1.ObjectMeta{Name: request.Name, Labels: request.Labels, ResourceVersion: f.version()},
+			Spec: v1alpha1.LocationSpec{
+				NodeGroups:        request.NodeGroups,
+				GeoLookup:         request.GeoLookup,
+				Weight:            request.Weight,
+				FallbackLocations: request.FallbackLocations,
+			},
+		}
+		f.locations[request.Name] = location
+		writeJSON(w, http.StatusCreated, location)
+	case len(rest) == 1:
+		name := rest[0]
+		location, exists := f.locations[name]
+		if !exists {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, location)
+		case http.MethodPatch:
+			var request edgecdnx.UpdateLocationRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+				return
+			}
+			if request.Labels != nil {
+				location.Labels = *request.Labels
+			}
+			if request.NodeGroups != nil {
+				location.Spec.NodeGroups = *request.NodeGroups
+			}
+			if request.GeoLookup != nil {
+				location.Spec.GeoLookup = *request.GeoLookup
+			}
+			if request.Weight != nil {
+				location.Spec.Weight = *request.Weight
+			}
+			if request.FallbackLocations != nil {
+				location.Spec.FallbackLocations = *request.FallbackLocations
+			}
+			location.ResourceVersion = f.version()
+			f.locations[name] = location
+			writeJSON(w, http.StatusOK, location)
+		case http.MethodDelete:
+			delete(f.locations, name)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (f *fakeAPI) serveProfiles(w http.ResponseWriter, r *http.Request, rest []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case len(rest) == 0 && r.Method == http.MethodGet:
+		profiles := make([]v1alpha1.HealthCheckProfile, 0, len(f.profiles))
+		for _, profile := range f.profiles {
+			profiles = append(profiles, profile)
+		}
+		writeJSON(w, http.StatusOK, profiles)
+	case len(rest) == 0 && r.Method == http.MethodPost:
+		var request edgecdnx.CreateHealthCheckProfileRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+			return
+		}
+		if _, exists := f.profiles[request.Name]; exists {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "already exists"})
+			return
+		}
+		profile := v1alpha1.HealthCheckProfile{
+			ObjectMeta: metav1.ObjectMeta{Name: request.Name, ResourceVersion: f.version()},
+			Spec:       v1alpha1.HealthCheckProfileSpec{Probes: request.Probes},
+		}
+		f.profiles[request.Name] = profile
+		writeJSON(w, http.StatusCreated, profile)
+	case len(rest) == 1:
+		name := rest[0]
+		profile, exists := f.profiles[name]
+		if !exists {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, profile)
+		case http.MethodPatch:
+			var request edgecdnx.UpdateHealthCheckProfileRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+				return
+			}
+			if request.Probes != nil {
+				profile.Spec.Probes = *request.Probes
+			}
+			profile.ResourceVersion = f.version()
+			f.profiles[name] = profile
+			writeJSON(w, http.StatusOK, profile)
+		case http.MethodDelete:
+			delete(f.profiles, name)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 func fakeRecord(dnsName, recordType string, targets []string, ttl int, resourceVersion string) apiRecord {

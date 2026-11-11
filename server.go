@@ -153,6 +153,16 @@ func (s *webhookServer) adjustEndpoints(w http.ResponseWriter, r *http.Request) 
 	if slog.Default().Enabled(r.Context(), slog.LevelDebug) {
 		slog.DebugContext(r.Context(), "webhook adjust endpoints", "endpoints", endpointSummaries(endpoints))
 	}
+	// Validate routing annotations and rewrite them into canonical form so the
+	// desired state ExternalDNS computes matches GET /records output.
+	for i := range endpoints {
+		canonical, err := canonicalizeEndpoint(endpoints[i])
+		if err != nil {
+			writeProviderError(w, err)
+			return
+		}
+		endpoints[i] = canonical
+	}
 	writeJSON(w, http.StatusOK, endpoints)
 }
 
