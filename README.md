@@ -123,16 +123,16 @@ and multi-cluster walkthroughs.
 ```yaml
 metadata:
   annotations:
-    external-dns.alpha.kubernetes.io/set-identifier: k8s-fra
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-routing: geo
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-continents: EU
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-countries: DE,AT,CH
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-endpoint: /healthz
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-protocol: https
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-port: "443"
+    external-dns.kubernetes.io/set-identifier: k8s-fra
+    external-dns.kubernetes.io/webhook-edgecdnx-routing: geo
+    external-dns.kubernetes.io/webhook-edgecdnx-continents: EU
+    external-dns.kubernetes.io/webhook-edgecdnx-countries: DE,AT,CH
+    external-dns.kubernetes.io/webhook-edgecdnx-health-endpoint: /healthz
+    external-dns.kubernetes.io/webhook-edgecdnx-health-protocol: https
+    external-dns.kubernetes.io/webhook-edgecdnx-health-port: "443"
 ```
 
-| Annotation (suffix of `external-dns.alpha.kubernetes.io/webhook-`) | Value |
+| Annotation (suffix of `external-dns.kubernetes.io/webhook-`) | Value |
 |---|---|
 | `edgecdnx-routing` | `simple` (default), `geo`, `wrr`, `rr`, `failover` |
 | `edgecdnx-weight` | required for `wrr`: integer `0..1000` |
@@ -147,7 +147,7 @@ metadata:
 Rules:
 
 - Non-simple routing requires the standard
-  `external-dns.alpha.kubernetes.io/set-identifier` annotation (it becomes the
+  `external-dns.kubernetes.io/set-identifier` annotation (it becomes the
   Location name) and works for `A`/`AAAA` records only. Violations are rejected
   with HTTP 400.
 - Locations created by the webhook are labelled
@@ -157,6 +157,10 @@ Rules:
 - Multiple clusters can publish the same hostname with distinct
   set-identifiers; they converge on one shared DNSEndpoint. Each cluster's
   ExternalDNS must run with a distinct `--txt-owner-id` **and** `--txt-prefix`.
+- `external-dns.kubernetes.io/` is the default annotation prefix since
+  ExternalDNS v0.22.0. For older releases use
+  `external-dns.alpha.kubernetes.io/`; v0.22.0+ reads the legacy prefix only
+  with `--enable-legacy-annotation-prefix`.
 
 ## Protocol and limitations
 
@@ -167,7 +171,7 @@ Rules:
   webhook limit matches ExternalDNS's default.
 - DNS owner names use the API's record naming convention. Zone selection uses
   the most-specific matching Project Zone and DNS label boundaries.
-- TTL `0` from ExternalDNS (no `external-dns.alpha.kubernetes.io/ttl`
+- TTL `0` from ExternalDNS (no `external-dns.kubernetes.io/ttl`
   annotation) is stored as-is; resolvers will not cache such records.
 - `setIdentifier` is supported together with the `edgecdnx-routing` annotations
   (non-Simple routing) and on TXT registry records, where it is persisted as an
@@ -189,3 +193,7 @@ make build
 The tests use an in-memory EdgeCDN-X API fixture and cover negotiation, endpoint
 conversion, read-only service endpoints, and version-checked create/update/delete
 flows.
+
+For end-to-end testing of the routing-policy annotations against a real
+EdgeCDN-X API, a two-cluster kind harness is provided in [e2e/](e2e/README.md)
+(`make -C e2e all`).

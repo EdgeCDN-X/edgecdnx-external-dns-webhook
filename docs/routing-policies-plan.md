@@ -17,19 +17,25 @@ webhook provisions the full EdgeCDN-X routing stack for that hostname:
 ExternalDNS converts annotations prefixed with
 
 ```
-external-dns.alpha.kubernetes.io/webhook-<name>: <value>
+external-dns.kubernetes.io/webhook-<name>: <value>
 ```
 
 into `providerSpecific` properties named `webhook/<name>` on each endpoint it sends to
 the webhook (`/adjustendpoints` and `POST /records`). The webhook therefore matches
 `providerSpecific` entries named `webhook/edgecdnx-*`; it never sees the annotation
 itself. `setIdentifier` comes from the standard
-`external-dns.alpha.kubernetes.io/set-identifier` annotation and arrives in the
+`external-dns.kubernetes.io/set-identifier` annotation and arrives in the
 `setIdentifier` endpoint field.
+
+> Prefix note: `external-dns.kubernetes.io/` is the default annotation prefix since
+> ExternalDNS v0.22.0. Older releases use `external-dns.alpha.kubernetes.io/`;
+> v0.22.0+ only reads the legacy prefix when started with
+> `--enable-legacy-annotation-prefix`. The providerSpecific names seen by the webhook
+> (`webhook/edgecdnx-*`) are identical with either prefix.
 
 ## Annotation reference
 
-All names below are suffixes of `external-dns.alpha.kubernetes.io/webhook-`.
+All names below are suffixes of `external-dns.kubernetes.io/webhook-`.
 
 | Annotation suffix | Applies to | Value | Maps to |
 |---|---|---|---|
@@ -50,13 +56,13 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   annotations:
-    external-dns.alpha.kubernetes.io/set-identifier: fra-edge-1
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-routing: geo
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-continents: EU
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-countries: DE,AT,CH
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-endpoint: /healthz
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-protocol: https
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-port: "443"
+    external-dns.kubernetes.io/set-identifier: fra-edge-1
+    external-dns.kubernetes.io/webhook-edgecdnx-routing: geo
+    external-dns.kubernetes.io/webhook-edgecdnx-continents: EU
+    external-dns.kubernetes.io/webhook-edgecdnx-countries: DE,AT,CH
+    external-dns.kubernetes.io/webhook-edgecdnx-health-endpoint: /healthz
+    external-dns.kubernetes.io/webhook-edgecdnx-health-protocol: https
+    external-dns.kubernetes.io/webhook-edgecdnx-health-port: "443"
 ```
 
 ## Validation rules (reject with HTTP 400)
@@ -286,12 +292,12 @@ Frankfurt Ingress:
 ```yaml
 metadata:
   annotations:
-    external-dns.alpha.kubernetes.io/set-identifier: k8s-fra
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-routing: wrr
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-weight: "70"
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-endpoint: /healthz
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-protocol: https
-    external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-port: "443"
+    external-dns.kubernetes.io/set-identifier: k8s-fra
+    external-dns.kubernetes.io/webhook-edgecdnx-routing: wrr
+    external-dns.kubernetes.io/webhook-edgecdnx-weight: "70"
+    external-dns.kubernetes.io/webhook-edgecdnx-health-endpoint: /healthz
+    external-dns.kubernetes.io/webhook-edgecdnx-health-protocol: https
+    external-dns.kubernetes.io/webhook-edgecdnx-health-port: "443"
 ```
 
 Amsterdam Ingress: same, with `set-identifier: k8s-ams` and `edgecdnx-weight: "30"`.
@@ -368,18 +374,18 @@ weighted RR over healthy locations) and answers with that location's node IP.
 Frankfurt:
 
 ```yaml
-external-dns.alpha.kubernetes.io/set-identifier: k8s-fra
-external-dns.alpha.kubernetes.io/webhook-edgecdnx-routing: geo
-external-dns.alpha.kubernetes.io/webhook-edgecdnx-continents: EU
-external-dns.alpha.kubernetes.io/webhook-edgecdnx-countries: GB,CH
+external-dns.kubernetes.io/set-identifier: k8s-fra
+external-dns.kubernetes.io/webhook-edgecdnx-routing: geo
+external-dns.kubernetes.io/webhook-edgecdnx-continents: EU
+external-dns.kubernetes.io/webhook-edgecdnx-countries: GB,CH
 ```
 
 Amsterdam:
 
 ```yaml
-external-dns.alpha.kubernetes.io/set-identifier: k8s-ams
-external-dns.alpha.kubernetes.io/webhook-edgecdnx-routing: geo
-external-dns.alpha.kubernetes.io/webhook-edgecdnx-continents: "NA,SA"
+external-dns.kubernetes.io/set-identifier: k8s-ams
+external-dns.kubernetes.io/webhook-edgecdnx-routing: geo
+external-dns.kubernetes.io/webhook-edgecdnx-continents: "NA,SA"
 ```
 
 Resulting Locations (DNSEndpoint as in scenario 1 but `routingPolicy: Geolocation`):
@@ -417,8 +423,8 @@ through to the next plugin.
 Both clusters only set:
 
 ```yaml
-external-dns.alpha.kubernetes.io/set-identifier: k8s-fra   # / k8s-ams
-external-dns.alpha.kubernetes.io/webhook-edgecdnx-routing: rr
+external-dns.kubernetes.io/set-identifier: k8s-fra   # / k8s-ams
+external-dns.kubernetes.io/webhook-edgecdnx-routing: rr
 ```
 
 Locations carry just the two labels, the default node group, and the node IP — no
@@ -430,19 +436,19 @@ same `routeSelector`. CoreDNS alternates between `k8s-fra` and `k8s-ams`.
 Frankfurt (primary):
 
 ```yaml
-external-dns.alpha.kubernetes.io/set-identifier: k8s-fra
-external-dns.alpha.kubernetes.io/webhook-edgecdnx-routing: failover
-external-dns.alpha.kubernetes.io/webhook-edgecdnx-fallback: k8s-ams
-external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-endpoint: /healthz
+external-dns.kubernetes.io/set-identifier: k8s-fra
+external-dns.kubernetes.io/webhook-edgecdnx-routing: failover
+external-dns.kubernetes.io/webhook-edgecdnx-fallback: k8s-ams
+external-dns.kubernetes.io/webhook-edgecdnx-health-endpoint: /healthz
 ```
 
 Amsterdam (secondary):
 
 ```yaml
-external-dns.alpha.kubernetes.io/set-identifier: k8s-ams
-external-dns.alpha.kubernetes.io/webhook-edgecdnx-routing: failover
-external-dns.alpha.kubernetes.io/webhook-edgecdnx-failover-role: secondary
-external-dns.alpha.kubernetes.io/webhook-edgecdnx-health-endpoint: /healthz
+external-dns.kubernetes.io/set-identifier: k8s-ams
+external-dns.kubernetes.io/webhook-edgecdnx-routing: failover
+external-dns.kubernetes.io/webhook-edgecdnx-failover-role: secondary
+external-dns.kubernetes.io/webhook-edgecdnx-health-endpoint: /healthz
 ```
 
 Resulting resources:

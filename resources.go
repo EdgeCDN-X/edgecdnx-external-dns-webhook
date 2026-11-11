@@ -264,6 +264,7 @@ func desiredHealthProbes(cfg *routingConfig, dnsName string) []v1alpha1.HealthCh
 			Port:     cfg.healthPort,
 			Path:     cfg.healthPath,
 			Host:     normalizeDNSName(dnsName),
+			Stack:    v1alpha1.StackTypeDual,
 		},
 	}}
 }
@@ -284,7 +285,8 @@ func profileNeedsUpdate(existing v1alpha1.HealthCheckProfile, desired []v1alpha1
 			if current.HTTP.Protocol != desired[i].HTTP.Protocol ||
 				current.HTTP.Port != desired[i].HTTP.Port ||
 				current.HTTP.Path != desired[i].HTTP.Path ||
-				current.HTTP.Host != desired[i].HTTP.Host {
+				current.HTTP.Host != desired[i].HTTP.Host ||
+				current.HTTP.Stack != desired[i].HTTP.Stack {
 				return true
 			}
 		}
