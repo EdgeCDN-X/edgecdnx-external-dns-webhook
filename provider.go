@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-const defaultRecordTTL = 60
-
 type provider struct {
 	api       *apiClient
 	projectID string
@@ -151,7 +149,7 @@ func endpointFromAPI(record apiRecord) (endpoint, bool, error) {
 	if !supportedRecordType(recordType) {
 		return endpoint{}, false, fmt.Errorf("unsupported record type %q", spec.RecordType)
 	}
-	if spec.RecordTTL < 1 {
+	if spec.RecordTTL < 0 {
 		return endpoint{}, false, fmt.Errorf("invalid TTL %d", spec.RecordTTL)
 	}
 	if len(spec.Targets) == 1 && strings.HasPrefix(spec.Targets[0], "LINK: ") {
@@ -354,10 +352,7 @@ func (p *provider) toAPIRecord(zones []apiZone, record endpoint) (apiZone, apiRe
 		return apiZone{}, apiRecordSpec{}, &permanentProviderError{err: err}
 	}
 	ttl := record.RecordTTL
-	if ttl == 0 {
-		ttl = defaultRecordTTL
-	}
-	if ttl < 1 || int64(int(ttl)) != ttl {
+	if ttl < 0 || int64(int(ttl)) != ttl {
 		return apiZone{}, apiRecordSpec{}, permanentError("invalid TTL %d for DNS endpoint %q", ttl, dnsName)
 	}
 	return zone, apiRecordSpec{

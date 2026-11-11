@@ -120,8 +120,8 @@ labels on the ExternalDNS pods. The default selector is
   matching ExternalDNS's default webhook body limit.
 - DNS owner names use the API's record naming convention. Zone selection uses
   the most-specific matching Project Zone and DNS label boundaries.
-- TTL `0` from ExternalDNS is stored as 60 seconds because the API requires a
-  positive TTL.
+- TTL `0` from ExternalDNS (no `external-dns.alpha.kubernetes.io/ttl`
+  annotation) is stored as-is; resolvers will not cache such records.
 - `setIdentifier` and non-Simple routing policies cannot be represented by the
   EdgeCDN-X API mapping and are rejected on writes.
 - `labels` and `providerSpecific` are currently not persisted by the API.

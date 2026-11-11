@@ -124,7 +124,7 @@ func TestApplyChangesUsesVersionedAPIUpdates(t *testing.T) {
 	api.mu.Lock()
 	defer api.mu.Unlock()
 	created, exists := api.records[dnsEndpointResourceName("create.example.com", "A")]
-	if !exists || created.Spec.RecordTTL != defaultRecordTTL || created.Spec.Targets[0] != "192.0.2.3" {
+	if !exists || created.Spec.RecordTTL != 0 || created.Spec.Targets[0] != "192.0.2.3" {
 		t.Fatalf("created record = %#v, exists = %v", created, exists)
 	}
 	updated := api.records[dnsEndpointResourceName("update.example.com", "A")]
