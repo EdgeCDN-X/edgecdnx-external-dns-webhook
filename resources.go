@@ -19,11 +19,13 @@ const (
 
 	defaultNodeGroupName = "default"
 
-	continentAttribute = "geoip/continent/code"
-	countryAttribute   = "geoip/country/code"
+	continentAttribute  = "geoip/continent/code"
+	countryAttribute    = "geoip/country/code"
+	geoDefaultAttribute = "default"
 
-	continentAttributeWeight = 1000
-	countryAttributeWeight   = 100
+	continentAttributeWeight  = 1000
+	countryAttributeWeight    = 100
+	geoDefaultAttributeWeight = 1
 )
 
 // endpointLabelValue derives the label value identifying all Locations that
@@ -129,12 +131,17 @@ func desiredGeoLookup(cfg *routingConfig) v1alpha1.GeoLookupSpec {
 	if cfg.policy != policyGeolocation {
 		return v1alpha1.GeoLookupSpec{}
 	}
-	attributes := make(map[string]v1alpha1.GeoLookupAttributeSpec, 2)
+	attributes := make(map[string]v1alpha1.GeoLookupAttributeSpec, 3)
 	if len(cfg.continents) > 0 {
 		attributes[continentAttribute] = geoAttributeSpec(continentAttributeWeight, cfg.continents)
 	}
 	if len(cfg.countries) > 0 {
 		attributes[countryAttribute] = geoAttributeSpec(countryAttributeWeight, cfg.countries)
+	}
+	if cfg.geoDefault {
+		// Catch-all candidate: the plugin scores the "default" attribute's
+		// weight for every request regardless of its origin.
+		attributes[geoDefaultAttribute] = v1alpha1.GeoLookupAttributeSpec{Weight: geoDefaultAttributeWeight}
 	}
 	return v1alpha1.GeoLookupSpec{Attributes: attributes}
 }
@@ -327,6 +334,7 @@ func configFromResources(record apiRecord, location v1alpha1.Location, profiles 
 	case policyGeolocation:
 		cfg.continents = geoAttributeValues(location.Spec.GeoLookup, continentAttribute)
 		cfg.countries = geoAttributeValues(location.Spec.GeoLookup, countryAttribute)
+		_, cfg.geoDefault = location.Spec.GeoLookup.Attributes[geoDefaultAttribute]
 	case policyFailover:
 		cfg.secondary = len(record.Spec.Targets) == 0 || record.Spec.Targets[0] != location.Name
 		if len(location.Spec.FallbackLocations) > 0 {

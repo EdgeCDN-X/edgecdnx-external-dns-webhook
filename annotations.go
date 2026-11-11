@@ -24,6 +24,7 @@ const (
 	propWeight       = "webhook/edgecdnx-weight"
 	propContinents   = "webhook/edgecdnx-continents"
 	propCountries    = "webhook/edgecdnx-countries"
+	propGeoDefault   = "webhook/edgecdnx-geo-default"
 	propFallback     = "webhook/edgecdnx-fallback"
 	propFailoverRole = "webhook/edgecdnx-failover-role"
 	propHealthPath   = "webhook/edgecdnx-health-endpoint"
@@ -63,6 +64,7 @@ type routingConfig struct {
 	weight      int32  // Weighted
 	continents  []string
 	countries   []string
+	geoDefault  bool   // Geolocation catch-all
 	fallback    string // Failover
 	secondary   bool   // Failover role
 	healthPath  string
@@ -148,12 +150,12 @@ func parseRoutingConfig(record endpoint) (*routingConfig, error) {
 	case policyFailover:
 		err = cfg.parseFailover(props, dnsName)
 	case policyRoundRobin:
-		err = rejectProps(props, dnsName, "rr", propWeight, propContinents, propCountries, propFallback, propFailoverRole)
+		err = rejectProps(props, dnsName, "rr", propWeight, propContinents, propCountries, propGeoDefault, propFallback, propFailoverRole)
 	}
 	if err != nil {
 		return nil, err
 	}
-	for _, name := range []string{propWeight, propContinents, propCountries, propFallback, propFailoverRole} {
+	for _, name := range []string{propWeight, propContinents, propCountries, propGeoDefault, propFallback, propFailoverRole} {
 		delete(props, name)
 	}
 
@@ -171,7 +173,7 @@ func parseRoutingConfig(record endpoint) (*routingConfig, error) {
 }
 
 func (c *routingConfig) parseWeighted(props map[string]string, dnsName string) error {
-	if err := rejectProps(props, dnsName, "wrr", propContinents, propCountries, propFallback, propFailoverRole); err != nil {
+	if err := rejectProps(props, dnsName, "wrr", propContinents, propCountries, propGeoDefault, propFallback, propFailoverRole); err != nil {
 		return err
 	}
 	rawWeight, exists := props[propWeight]
@@ -197,14 +199,21 @@ func (c *routingConfig) parseGeolocation(props map[string]string, dnsName string
 	if c.countries, err = parseCodeList(props[propCountries], "country", dnsName); err != nil {
 		return err
 	}
-	if len(c.continents) == 0 && len(c.countries) == 0 {
-		return permanentError("geo routing on endpoint %q requires continents and/or countries", dnsName)
+	if rawDefault, exists := props[propGeoDefault]; exists {
+		geoDefault, err := strconv.ParseBool(strings.ToLower(strings.TrimSpace(rawDefault)))
+		if err != nil {
+			return permanentError("geo-default %q on endpoint %q must be true or false", rawDefault, dnsName)
+		}
+		c.geoDefault = geoDefault
+	}
+	if len(c.continents) == 0 && len(c.countries) == 0 && !c.geoDefault {
+		return permanentError("geo routing on endpoint %q requires continents, countries and/or geo-default", dnsName)
 	}
 	return nil
 }
 
 func (c *routingConfig) parseFailover(props map[string]string, dnsName string) error {
-	if err := rejectProps(props, dnsName, "failover", propWeight, propContinents, propCountries); err != nil {
+	if err := rejectProps(props, dnsName, "failover", propWeight, propContinents, propCountries, propGeoDefault); err != nil {
 		return err
 	}
 	role := failoverRolePrimary
@@ -346,6 +355,9 @@ func serializeProviderSpecific(cfg *routingConfig) []providerSpecificProperty {
 		}
 		if len(cfg.countries) > 0 {
 			props = append(props, providerSpecificProperty{Name: propCountries, Value: strings.Join(cfg.countries, ",")})
+		}
+		if cfg.geoDefault {
+			props = append(props, providerSpecificProperty{Name: propGeoDefault, Value: "true"})
 		}
 	case policyFailover:
 		if cfg.secondary {

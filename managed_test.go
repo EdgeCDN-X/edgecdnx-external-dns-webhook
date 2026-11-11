@@ -131,7 +131,7 @@ func TestGeoRecordsRoundTripAndIdempotency(t *testing.T) {
 	handler := newWebhookServer(testProvider(t, apiServer.URL))
 
 	create := managedTestEndpoint("A", "k8s-fra", []string{"203.0.113.10"},
-		props(propRouting, "geo", propContinents, "EU", propCountries, "GB,CH",
+		props(propRouting, "geo", propContinents, "EU", propCountries, "GB,CH", propGeoDefault, "true",
 			propHealthPath, "/healthz", propHealthProto, "https", propHealthPort, "443"))
 	mustAccept(t, postChanges(t, handler, changes{Create: []endpoint{create}}))
 
@@ -148,6 +148,10 @@ func TestGeoRecordsRoundTripAndIdempotency(t *testing.T) {
 	if country.Weight != countryAttributeWeight || len(country.Values) != 2 {
 		t.Fatalf("country attribute = %+v", country)
 	}
+	geoDefault, hasGeoDefault := geoLookup.Attributes[geoDefaultAttribute]
+	if !hasGeoDefault || geoDefault.Weight != geoDefaultAttributeWeight || len(geoDefault.Values) != 0 {
+		t.Fatalf("default attribute = %+v (present=%v)", geoDefault, hasGeoDefault)
+	}
 
 	// GET /records must reconstruct the endpoint exactly as ExternalDNS sent it.
 	records := getRecords(t, handler)
@@ -159,7 +163,7 @@ func TestGeoRecordsRoundTripAndIdempotency(t *testing.T) {
 		len(got.Targets) != 1 || got.Targets[0] != "203.0.113.10" {
 		t.Fatalf("reconstructed endpoint = %+v", got)
 	}
-	wantProps := props(propRouting, "geo", propContinents, "EU", propCountries, "GB,CH",
+	wantProps := props(propRouting, "geo", propContinents, "EU", propCountries, "GB,CH", propGeoDefault, "true",
 		propHealthPath, "/healthz", propHealthProto, "https", propHealthPort, "443")
 	if len(got.ProviderSpecific) != len(wantProps) {
 		t.Fatalf("providerSpecific = %+v, want %+v", got.ProviderSpecific, wantProps)

@@ -43,6 +43,7 @@ All names below are suffixes of `external-dns.kubernetes.io/webhook-`.
 | `edgecdnx-weight` | `wrr` (required) | integer `0..1000` | `Location.spec.weight` |
 | `edgecdnx-continents` | `geo` (optional) | comma-delimited continent codes, e.g. `EU,AF,SA` | `Location.spec.geoLookup.attributes["geoip/continent/code"].values` |
 | `edgecdnx-countries` | `geo` (optional) | comma-delimited ISO 3166-1 alpha-2 codes, e.g. `SK,HU,NL` | `Location.spec.geoLookup.attributes["geoip/country/code"].values` |
+| `edgecdnx-geo-default` | `geo` (optional) | `true` or `false` (default `false`) | `Location.spec.geoLookup.attributes["default"]` with weight `1` (catch-all candidate) |
 | `edgecdnx-fallback` | `failover` (required for `primary`, optional for `secondary`) | location name (DNS-1123) | `Location.spec.fallbackLocations[0]` |
 | `edgecdnx-failover-role` | `failover` (optional) | `primary` (default) or `secondary` | primary: `DNSEndpoint.spec.targets[0] = setIdentifier`; secondary: Location only |
 | `edgecdnx-health-endpoint` | non-simple (optional) | request path, e.g. `/healthz` | `HealthCheckProbeSpec.http.path` |
@@ -77,9 +78,10 @@ Validation happens when converting an incoming endpoint; failures are returned a
 3. If routing is `simple`, `setIdentifier` must be empty (current behaviour preserved)
    and no other `edgecdnx-*` property may be present.
 4. `wrr`: `edgecdnx-weight` required, integer in `0..1000`.
-5. `geo`: `edgecdnx-continents` / `edgecdnx-countries` optional, but at least one of the
-   two must be present; each entry is an uppercase 2-letter code after trimming;
-   empty entries rejected.
+5. `geo`: `edgecdnx-continents` / `edgecdnx-countries` / `edgecdnx-geo-default` optional,
+   but at least one of the three must be present (`geo-default: false` does not count);
+   each continent/country entry is an uppercase 2-letter code after trimming;
+   empty entries rejected; `edgecdnx-geo-default` must parse as a boolean.
 6. `failover`: `edgecdnx-failover-role` must be `primary` (default) or `secondary`.
    For `primary`, `edgecdnx-fallback` is required (valid DNS-1123 subdomain); for
    `secondary` it is optional (used for fallback chains). `edgecdnx-failover-role`

@@ -138,6 +138,7 @@ metadata:
 | `edgecdnx-weight` | required for `wrr`: integer `0..1000` |
 | `edgecdnx-continents` | `geo`: comma-delimited continent codes (`EU,NA`, ...) |
 | `edgecdnx-countries` | `geo`: comma-delimited ISO country codes (`SK,HU`, ...) |
+| `edgecdnx-geo-default` | `geo`: `true` marks the Location as the catch-all (adds the `default` geo attribute with weight 1) |
 | `edgecdnx-fallback` | `failover`: fallback location name (required for primary) |
 | `edgecdnx-failover-role` | `failover`: `primary` (default) or `secondary` |
 | `edgecdnx-health-endpoint` | HTTP(S) health check path, e.g. `/healthz` |

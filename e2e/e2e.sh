@@ -119,10 +119,11 @@ cmd_deploy() {
 # indented) for one cluster, based on E2E_ROUTING and the FRA_/AMS_ variables.
 routing_annotations() {
   local prefix="$1"
-  local weight continents countries role fallback
+  local weight continents countries geodefault role fallback
   weight="$(var "$prefix" WEIGHT)"
   continents="$(var "$prefix" CONTINENTS)"
   countries="$(var "$prefix" COUNTRIES)"
+  geodefault="$(var "$prefix" GEO_DEFAULT)"
   role="$(var "$prefix" FAILOVER_ROLE)"
   fallback="$(var "$prefix" FALLBACK)"
   case "$E2E_ROUTING" in
@@ -131,9 +132,10 @@ routing_annotations() {
       printf '    %s/webhook-edgecdnx-weight: "%s"\n' "$E2E_ANNOTATION_PREFIX" "$weight"
       ;;
     geo)
-      [[ -n "$continents$countries" ]] || { echo "error: ${prefix}_CONTINENTS or ${prefix}_COUNTRIES is required for geo" >&2; exit 1; }
+      [[ -n "$continents$countries$geodefault" ]] || { echo "error: ${prefix}_CONTINENTS, ${prefix}_COUNTRIES or ${prefix}_GEO_DEFAULT is required for geo" >&2; exit 1; }
       [[ -z "$continents" ]] || printf '    %s/webhook-edgecdnx-continents: "%s"\n' "$E2E_ANNOTATION_PREFIX" "$continents"
       [[ -z "$countries" ]] || printf '    %s/webhook-edgecdnx-countries: "%s"\n' "$E2E_ANNOTATION_PREFIX" "$countries"
+      [[ -z "$geodefault" ]] || printf '    %s/webhook-edgecdnx-geo-default: "%s"\n' "$E2E_ANNOTATION_PREFIX" "$geodefault"
       ;;
     failover)
       [[ -z "$role" ]] || printf '    %s/webhook-edgecdnx-failover-role: "%s"\n' "$E2E_ANNOTATION_PREFIX" "$role"

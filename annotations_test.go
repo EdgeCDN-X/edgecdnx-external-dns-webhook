@@ -100,9 +100,28 @@ func TestParseRoutingConfigValidationMatrix(t *testing.T) {
 			wantErr:  "not allowed with wrr",
 		},
 		{
-			name:     "geo requires continents or countries",
+			name:     "geo requires continents, countries or geo-default",
 			endpoint: managedTestEndpoint("A", "k8s-fra", ipv4, props(propRouting, "geo")),
-			wantErr:  "requires continents and/or countries",
+			wantErr:  "requires continents, countries and/or geo-default",
+		},
+		{
+			name:     "geo accepts geo-default without codes",
+			endpoint: managedTestEndpoint("A", "k8s-fra", ipv4, props(propRouting, "geo", propGeoDefault, "true")),
+		},
+		{
+			name:     "geo-default false alone is insufficient",
+			endpoint: managedTestEndpoint("A", "k8s-fra", ipv4, props(propRouting, "geo", propGeoDefault, "false")),
+			wantErr:  "requires continents, countries and/or geo-default",
+		},
+		{
+			name:     "geo rejects invalid geo-default",
+			endpoint: managedTestEndpoint("A", "k8s-fra", ipv4, props(propRouting, "geo", propGeoDefault, "maybe")),
+			wantErr:  "must be true or false",
+		},
+		{
+			name:     "geo-default rejected on wrr",
+			endpoint: managedTestEndpoint("A", "k8s-fra", ipv4, props(propRouting, "wrr", propWeight, "70", propGeoDefault, "true")),
+			wantErr:  "not allowed with wrr",
 		},
 		{
 			name:     "geo rejects invalid code",
