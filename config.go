@@ -2,13 +2,10 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"os"
 	"strings"
-	"time"
 )
 
 type config struct {
@@ -59,24 +56,15 @@ func configFromEnv() (config, error) {
 	}, nil
 }
 
-func newAPIClient(cfg config) (*apiClient, error) {
+func validateAPIConfig(cfg config) error {
 	parsedURL, err := url.Parse(cfg.apiURL)
 	if err != nil || parsedURL.Host == "" ||
 		(parsedURL.Scheme != "https" && parsedURL.Scheme != "http") ||
 		parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
-		return nil, fmt.Errorf("invalid API URL")
+		return errors.New("invalid API URL")
 	}
 	if strings.TrimSpace(cfg.apiKey) == "" || strings.ContainsAny(cfg.apiKey, " \t\r\n") {
-		return nil, errors.New("API key must not be empty or contain whitespace")
+		return errors.New("API key must not be empty or contain whitespace")
 	}
-	return &apiClient{
-		baseURL: strings.TrimRight(cfg.apiURL, "/"),
-		key:     cfg.apiKey,
-		http: &http.Client{
-			Timeout: 10 * time.Second,
-			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
-	}, nil
+	return nil
 }

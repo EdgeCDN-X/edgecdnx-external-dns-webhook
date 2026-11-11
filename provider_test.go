@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 func TestWildcardDNSNames(t *testing.T) {
 	for _, test := range []struct {
@@ -43,14 +47,14 @@ func TestWildcardEndpointConversion(t *testing.T) {
 	if err != nil || !include {
 		t.Fatalf("endpointFromAPI: include=%v, error=%v", include, err)
 	}
-	zone := apiZone{Metadata: apiMetadata{Name: "tbotech.sk"}}
+	zone := apiZone{ObjectMeta: metav1.ObjectMeta{Name: "tbotech.sk"}}
 	zone.Spec.Zone = "tbotech.sk"
 	p := &provider{}
 	matched, spec, err := p.toAPIRecord([]apiZone{zone}, converted)
 	if err != nil {
 		t.Fatalf("toAPIRecord: %v", err)
 	}
-	if matched.Metadata.Name != zone.Metadata.Name || !sameRecord(record.Spec, spec) {
+	if matched.Name != zone.Name || !sameRecord(record.Spec, spec) {
 		t.Fatalf("wildcard round trip changed record: zone=%+v, spec=%+v", matched, spec)
 	}
 }

@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	v1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const webhookAccept = webhookMediaType + ";version=1"
@@ -37,6 +40,53 @@ func TestNegotiateReturnsProjectZones(t *testing.T) {
 	}
 	if len(result.Filters) != 1 || result.Filters[0] != ".example.com" {
 		t.Fatalf("filters = %#v, want [\".example.com\"]", result.Filters)
+	}
+}
+
+func TestAPIErrorStatusIsPreservedWithoutEchoingResponseBody(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"API echoed test-key"}`))
+	}))
+	defer apiServer.Close()
+
+	handler := newWebhookServer(testProvider(t, apiServer.URL))
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Accept", webhookAccept)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusForbidden, response.Body)
+	}
+	if !strings.Contains(response.Body.String(), "HTTP 403") || strings.Contains(response.Body.String(), "test-key") {
+		t.Fatalf("API error should retain its status without exposing the response body: %s", response.Body)
+	}
+}
+
+func TestAPIRedirectIsRejected(t *testing.T) {
+	requests := 0
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/project/test-project/zones" {
+			t.Errorf("unexpected follow-up request path %q", r.URL.Path)
+		}
+		http.Redirect(w, r, "/redirect-target", http.StatusFound)
+	}))
+	defer apiServer.Close()
+
+	handler := newWebhookServer(testProvider(t, apiServer.URL))
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Accept", webhookAccept)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusFound, response.Body)
+	}
+	if requests != 1 {
+		t.Fatalf("API redirect was followed %d times, want once", requests)
 	}
 }
 
@@ -128,7 +178,7 @@ func TestApplyChangesUsesVersionedAPIUpdates(t *testing.T) {
 		t.Fatalf("created record = %#v, exists = %v", created, exists)
 	}
 	updated := api.records[dnsEndpointResourceName("update.example.com", "A")]
-	if updated.Spec.RecordTTL != 120 || updated.Spec.Targets[0] != "192.0.2.2" || updated.Metadata.ResourceVersion == "1" {
+	if updated.Spec.RecordTTL != 120 || updated.Spec.Targets[0] != "192.0.2.2" || updated.ResourceVersion == "1" {
 		t.Fatalf("updated record = %#v", updated)
 	}
 	if _, exists := api.records[dnsEndpointResourceName("delete.example.com", "TXT")]; exists {
@@ -181,11 +231,11 @@ func TestApplyDoesNotDeleteNonSimpleRouting(t *testing.T) {
 
 func testProvider(t *testing.T, apiURL string) *provider {
 	t.Helper()
-	api, err := newAPIClient(config{apiURL: apiURL, apiKey: "test-key", projectID: "test-project"})
+	api, err := newProvider(config{apiURL: apiURL, apiKey: "test-key", projectID: "test-project"})
 	if err != nil {
-		t.Fatalf("create API client: %v", err)
+		t.Fatalf("create provider: %v", err)
 	}
-	return &provider{api: api, projectID: "test-project"}
+	return api
 }
 
 type fakeAPI struct {
@@ -235,7 +285,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "already exists"})
 			return
 		}
-		record := apiRecord{Metadata: apiMetadata{Name: name, ResourceVersion: f.version()}, Spec: spec}
+		record := apiRecord{ObjectMeta: metav1.ObjectMeta{Name: name, ResourceVersion: f.version()}, Spec: spec}
 		f.records[name] = record
 		writeJSON(w, http.StatusCreated, record)
 		return
@@ -263,17 +313,17 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 			return
 		}
-		if patch.ResourceVersion != record.Metadata.ResourceVersion {
+		if patch.ResourceVersion != record.ResourceVersion {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "stale version"})
 			return
 		}
 		record.Spec.RecordTTL = patch.RecordTTL
 		record.Spec.Targets = patch.Targets
-		record.Metadata.ResourceVersion = f.version()
+		record.ResourceVersion = f.version()
 		f.records[name] = record
 		writeJSON(w, http.StatusOK, record)
 	case http.MethodDelete:
-		if r.URL.Query().Get("resourceVersion") != record.Metadata.ResourceVersion {
+		if r.URL.Query().Get("resourceVersion") != record.ResourceVersion {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "stale version"})
 			return
 		}
@@ -292,11 +342,11 @@ func (f *fakeAPI) version() string {
 
 func fakeRecord(dnsName, recordType string, targets []string, ttl int, resourceVersion string) apiRecord {
 	return apiRecord{
-		Metadata: apiMetadata{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:            dnsEndpointResourceName(dnsName, recordType),
 			ResourceVersion: resourceVersion,
 		},
-		Spec: apiRecordSpec{
+		Spec: v1alpha1.DNSEndpointSpec{
 			DNSName:       dnsName,
 			RoutingPolicy: "Simple",
 			RecordTTL:     ttl,
@@ -307,7 +357,8 @@ func fakeRecord(dnsName, recordType string, targets []string, ttl int, resourceV
 }
 
 func testZone() apiZone {
-	zone := apiZone{Metadata: apiMetadata{Name: "example.com"}}
-	zone.Spec.Zone = "example.com"
-	return zone
+	return apiZone{
+		ObjectMeta: metav1.ObjectMeta{Name: "example.com"},
+		Spec:       v1alpha1.ZoneSpec{Zone: "example.com"},
+	}
 }

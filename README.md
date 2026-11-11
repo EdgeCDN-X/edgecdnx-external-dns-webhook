@@ -1,7 +1,8 @@
 # EdgeCDN-X ExternalDNS webhook
 
-An ExternalDNS webhook provider that reads and manages DNS endpoints through the
-EdgeCDN-X API. It implements the ExternalDNS webhook v1 protocol on port `8888`.
+An ExternalDNS webhook provider that reads and manages DNS endpoints through
+[`edgecdnx-sdk-go`](https://github.com/EdgeCDN-X/edgecdnx-sdk-go). It implements
+the ExternalDNS webhook v1 protocol on port `8888`.
 
 The provider uses the Project's configured Zones as its domain filters. It reads
 each Zone's DNS endpoints and supports `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `SRV`,
@@ -19,11 +20,11 @@ DNS changes are translated to the Project API:
 
 | ExternalDNS operation | EdgeCDN-X API operation |
 | --- | --- |
-| `GET /` negotiation | List Project Zones; return each as a suffix filter |
-| `GET /records` | List DNS endpoints for each Zone |
-| `POST /records` create | `POST /project/{project}/zones/{zone}/dns-endpoints` |
-| `POST /records` update | Directly read, then `PATCH` with `resourceVersion` |
-| `POST /records` delete | Directly read, then `DELETE` with `resourceVersion` |
+| `GET /` negotiation | SDK `Zones.List`; return each zone as a suffix filter |
+| `GET /records` | SDK `DNSRecords.List` for each zone |
+| `POST /records` create | SDK `DNSRecords.Create` |
+| `POST /records` update | SDK `DNSRecords.Get`, then `DNSRecords.Update` with `resourceVersion` |
+| `POST /records` delete | SDK `DNSRecords.Get`, then `DNSRecords.DeleteWithOptions` with `resourceVersion` |
 
 Updates and deletes use optimistic concurrency and retry conflicts a bounded
 number of times. Repeated creates are accepted only when the existing endpoint
@@ -55,19 +56,19 @@ EDGECDNX_API_KEY="$(cat /path/to/api-key)" \
 
 Use a secret manager or Kubernetes Secret for the API key; never put it in
 Helm values, command-line arguments, logs, or a committed Secret manifest.
-Redirects are rejected, TLS certificate validation is enabled, and outgoing API
-requests have a 10-second timeout. The API key is sent only to the configured
-EdgeCDN-X API URL.
+The published Go SDK is pinned to v0.1.1. Redirects are rejected, TLS
+certificate validation is enabled, and outgoing API requests have a 10-second
+timeout. The API key is sent only to the configured EdgeCDN-X API URL.
 
 ### Debug logging
 
-Set `LOG_LEVEL=debug` to log every incoming ExternalDNS webhook request
-(method, path, status, duration, decoded change sets) and every EdgeCDN-X API
-request and response, including bodies, HTTP status and duration. Health probe
-requests to `/healthz` are not logged. The API key is never logged at any
-level: the `Authorization` header is never printed, and any logged request or
-response text has occurrences of the key redacted. DNS endpoint data appears in
-debug logs; it is public DNS data, not credentials.
+Set `LOG_LEVEL=debug` to log incoming ExternalDNS webhook request details
+(method, path, status, duration, decoded change sets). Health probe requests to
+`/healthz` are not logged. EdgeCDN-X API requests and responses are also logged
+at debug level; authorization headers are never logged and occurrences of the
+API key in logged text are redacted. API error response bodies are not included
+in webhook errors. DNS endpoint data appears in debug logs; it is public DNS
+data, not credentials.
 
 ## ExternalDNS deployment
 
@@ -116,8 +117,8 @@ labels on the ExternalDNS pods. The default selector is
 - Supports ExternalDNS webhook media type `application/external.dns.webhook+json;version=1`.
 - Implements `GET /`, `GET /records`, `POST /records`, `POST /adjustendpoints`,
   and `GET /healthz`.
-- Webhook request and EdgeCDN-X API response bodies are limited to 32 MiB,
-  matching ExternalDNS's default webhook body limit.
+- Webhook request and EdgeCDN-X API response bodies are limited to 32 MiB; the
+  webhook limit matches ExternalDNS's default.
 - DNS owner names use the API's record naming convention. Zone selection uses
   the most-specific matching Project Zone and DNS label boundaries.
 - TTL `0` from ExternalDNS (no `external-dns.alpha.kubernetes.io/ttl`

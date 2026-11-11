@@ -6,14 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
+
+	v1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
+	edgecdnx "github.com/EdgeCDN-X/edgecdnx-sdk-go"
 )
 
 type provider struct {
-	api       *apiClient
+	api       *edgecdnx.Client
 	projectID string
 }
 
@@ -29,30 +31,9 @@ func (e *permanentProviderError) Unwrap() error {
 	return e.err
 }
 
-type apiMetadata struct {
-	Name            string `json:"name"`
-	ResourceVersion string `json:"resourceVersion"`
-}
-
-type apiZone struct {
-	Metadata apiMetadata `json:"metadata"`
-	Spec     struct {
-		Zone string `json:"zone"`
-	} `json:"spec"`
-}
-
-type apiRecordSpec struct {
-	DNSName       string   `json:"dnsName"`
-	RoutingPolicy string   `json:"routingPolicy"`
-	RecordTTL     int      `json:"recordTTL"`
-	RecordType    string   `json:"recordType"`
-	Targets       []string `json:"targets"`
-}
-
-type apiRecord struct {
-	Metadata apiMetadata   `json:"metadata"`
-	Spec     apiRecordSpec `json:"spec"`
-}
+type apiZone = v1alpha1.Zone
+type apiRecord = v1alpha1.DNSEndpoint
+type apiRecordSpec = v1alpha1.DNSEndpointSpec
 
 type endpoint struct {
 	DNSName          string                     `json:"dnsName"`
@@ -77,7 +58,22 @@ type changes struct {
 }
 
 func newProvider(cfg config) (*provider, error) {
-	api, err := newAPIClient(cfg)
+	if err := validateAPIConfig(cfg); err != nil {
+		return nil, err
+	}
+	api, err := edgecdnx.NewClient(cfg.apiURL,
+		edgecdnx.WithAPIKey(cfg.apiKey),
+		edgecdnx.WithHTTPClient(&http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &apiRoundTripper{
+				next: http.DefaultTransport,
+				key:  cfg.apiKey,
+			},
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -85,24 +81,24 @@ func newProvider(cfg config) (*provider, error) {
 }
 
 func (p *provider) zones(ctx context.Context) ([]apiZone, error) {
-	var zones []apiZone
-	if err := p.api.request(ctx, http.MethodGet, p.api.zonesPath(p.projectID), nil, &zones); err != nil {
-		return nil, fmt.Errorf("fetch Project zones: %w", err)
+	zones, err := p.api.Zones.List(ctx, p.projectID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch Project zones: %w", safeAPIError(err))
 	}
 	seenIDs := make(map[string]struct{}, len(zones))
 	seenNames := make(map[string]struct{}, len(zones))
 	for i := range zones {
 		zones[i].Spec.Zone = normalizeDNSName(zones[i].Spec.Zone)
-		if !validZone(zones[i].Spec.Zone) || !validResourceID(zones[i].Metadata.Name) {
+		if !validZone(zones[i].Spec.Zone) || !validResourceID(zones[i].Name) {
 			return nil, errors.New("EdgeCDN-X API returned an invalid zone name or ID")
 		}
-		if _, exists := seenIDs[zones[i].Metadata.Name]; exists {
-			return nil, fmt.Errorf("EdgeCDN-X API returned duplicate zone ID %q", zones[i].Metadata.Name)
+		if _, exists := seenIDs[zones[i].Name]; exists {
+			return nil, fmt.Errorf("EdgeCDN-X API returned duplicate zone ID %q", zones[i].Name)
 		}
 		if _, exists := seenNames[zones[i].Spec.Zone]; exists {
 			return nil, fmt.Errorf("EdgeCDN-X API returned duplicate DNS zone %q", zones[i].Spec.Zone)
 		}
-		seenIDs[zones[i].Metadata.Name] = struct{}{}
+		seenIDs[zones[i].Name] = struct{}{}
 		seenNames[zones[i].Spec.Zone] = struct{}{}
 	}
 	sort.Slice(zones, func(i, j int) bool {
@@ -118,20 +114,20 @@ func (p *provider) records(ctx context.Context) ([]endpoint, error) {
 	}
 	records := make([]endpoint, 0)
 	for _, zone := range zones {
-		var apiRecords []apiRecord
-		if err := p.api.request(ctx, http.MethodGet, p.api.endpointsPath(p.projectID, zone.Metadata.Name), nil, &apiRecords); err != nil {
-			return nil, fmt.Errorf("fetch DNS endpoints for zone %q: %w", zone.Spec.Zone, err)
+		apiRecords, err := p.api.DNSRecords.List(ctx, p.projectID, zone.Name)
+		if err != nil {
+			return nil, fmt.Errorf("fetch DNS endpoints for zone %q: %w", zone.Spec.Zone, safeAPIError(err))
 		}
 		for _, record := range apiRecords {
 			converted, include, err := endpointFromAPI(record)
 			if err != nil {
-				return nil, fmt.Errorf("convert DNS endpoint %q: %w", record.Metadata.Name, err)
+				return nil, fmt.Errorf("convert DNS endpoint %q: %w", record.Name, err)
 			}
 			if !include {
 				continue
 			}
 			if !dnsNameBelongsToZone(converted.DNSName, zone.Spec.Zone) {
-				return nil, fmt.Errorf("DNS endpoint %q is outside zone %q", record.Metadata.Name, zone.Spec.Zone)
+				return nil, fmt.Errorf("DNS endpoint %q is outside zone %q", record.Name, zone.Spec.Zone)
 			}
 			records = append(records, converted)
 		}
@@ -220,17 +216,23 @@ func (p *provider) createEndpoint(ctx context.Context, zones []apiZone, record e
 	if err != nil {
 		return err
 	}
-	err = p.api.request(ctx, http.MethodPost, p.api.endpointsPath(p.projectID, zone.Metadata.Name), apiRecord, nil)
-	if hasAPIStatus(err, http.StatusConflict) {
+	_, err = p.api.DNSRecords.Create(ctx, p.projectID, zone.Name, edgecdnx.CreateDNSRecordRequest{
+		DNSName:       apiRecord.DNSName,
+		RoutingPolicy: apiRecord.RoutingPolicy,
+		RecordTTL:     edgecdnx.Ptr(apiRecord.RecordTTL),
+		RecordType:    apiRecord.RecordType,
+		Targets:       apiRecord.Targets,
+	})
+	if edgecdnx.IsConflict(err) {
 		existing, getErr := p.getRecord(ctx, zone, record)
 		if getErr == nil && sameRecord(existing.Spec, apiRecord) {
 			return nil
 		}
 		if getErr != nil {
-			if hasAPIStatus(getErr, http.StatusNotFound) {
+			if edgecdnx.IsNotFound(getErr) {
 				return translateAPIError("create DNS endpoint", err)
 			}
-			return getErr
+			return translateAPIError("read existing DNS endpoint after create conflict", getErr)
 		}
 	}
 	return translateAPIError("create DNS endpoint", err)
@@ -242,36 +244,29 @@ func (p *provider) updateEndpoint(ctx context.Context, zones []apiZone, desired 
 		return err
 	}
 	recordID := dnsEndpointResourceName(desiredRecord.DNSName, desiredRecord.RecordType)
-	recordPath := p.api.endpointPath(p.projectID, zone.Metadata.Name, recordID)
 	for attempt := 0; attempt < 6; attempt++ {
-		var current apiRecord
-		err := p.api.request(ctx, http.MethodGet, recordPath, nil, &current)
-		if hasAPIStatus(err, http.StatusNotFound) {
+		current, err := p.api.DNSRecords.Get(ctx, p.projectID, zone.Name, recordID)
+		if edgecdnx.IsNotFound(err) {
 			return p.createEndpoint(ctx, zones, desired)
 		}
 		if err != nil {
 			return translateAPIError("read DNS endpoint before update", err)
 		}
 		if current.Spec.RoutingPolicy != "" && current.Spec.RoutingPolicy != "Simple" {
-			return permanentError("cannot update DNS endpoint %q with routing policy %q through ExternalDNS", current.Metadata.Name, current.Spec.RoutingPolicy)
+			return permanentError("cannot update DNS endpoint %q with routing policy %q through ExternalDNS", current.Name, current.Spec.RoutingPolicy)
 		}
 		if sameRecord(current.Spec, desiredRecord) {
 			return nil
 		}
-		if current.Metadata.ResourceVersion == "" {
-			return fmt.Errorf("DNS endpoint %q has no resourceVersion", current.Metadata.Name)
+		if current.ResourceVersion == "" {
+			return fmt.Errorf("DNS endpoint %q has no resourceVersion", current.Name)
 		}
-		payload := struct {
-			ResourceVersion string   `json:"resourceVersion"`
-			RecordTTL       int      `json:"recordTTL"`
-			Targets         []string `json:"targets"`
-		}{
-			ResourceVersion: current.Metadata.ResourceVersion,
-			RecordTTL:       desiredRecord.RecordTTL,
+		_, err = p.api.DNSRecords.Update(ctx, p.projectID, zone.Name, recordID, edgecdnx.UpdateDNSRecordRequest{
+			ResourceVersion: current.ResourceVersion,
+			RecordTTL:       edgecdnx.Ptr(desiredRecord.RecordTTL),
 			Targets:         desiredRecord.Targets,
-		}
-		err = p.api.request(ctx, http.MethodPatch, recordPath, payload, nil)
-		if hasAPIStatus(err, http.StatusConflict) {
+		})
+		if edgecdnx.IsConflict(err) {
 			if err := waitRetry(ctx, attempt); err != nil {
 				return err
 			}
@@ -288,28 +283,27 @@ func (p *provider) deleteEndpoint(ctx context.Context, zones []apiZone, record e
 		return err
 	}
 	recordID := dnsEndpointResourceName(recordValue.DNSName, recordValue.RecordType)
-	recordPath := p.api.endpointPath(p.projectID, zone.Metadata.Name, recordID)
 	for attempt := 0; attempt < 6; attempt++ {
-		var current apiRecord
-		err := p.api.request(ctx, http.MethodGet, recordPath, nil, &current)
-		if hasAPIStatus(err, http.StatusNotFound) {
+		current, err := p.api.DNSRecords.Get(ctx, p.projectID, zone.Name, recordID)
+		if edgecdnx.IsNotFound(err) {
 			return nil
 		}
 		if err != nil {
 			return translateAPIError("read DNS endpoint before delete", err)
 		}
 		if current.Spec.RoutingPolicy != "" && current.Spec.RoutingPolicy != "Simple" {
-			return permanentError("cannot delete DNS endpoint %q with routing policy %q through ExternalDNS", current.Metadata.Name, current.Spec.RoutingPolicy)
+			return permanentError("cannot delete DNS endpoint %q with routing policy %q through ExternalDNS", current.Name, current.Spec.RoutingPolicy)
 		}
-		if current.Metadata.ResourceVersion == "" {
-			return fmt.Errorf("DNS endpoint %q has no resourceVersion", current.Metadata.Name)
+		if current.ResourceVersion == "" {
+			return fmt.Errorf("DNS endpoint %q has no resourceVersion", current.Name)
 		}
-		deleteURL := recordPath + "?resourceVersion=" + url.QueryEscape(current.Metadata.ResourceVersion)
-		err = p.api.request(ctx, http.MethodDelete, deleteURL, nil, nil)
-		if hasAPIStatus(err, http.StatusNotFound) {
+		err = p.api.DNSRecords.DeleteWithOptions(ctx, p.projectID, zone.Name, recordID, edgecdnx.DeleteDNSRecordOptions{
+			ResourceVersion: current.ResourceVersion,
+		})
+		if edgecdnx.IsNotFound(err) {
 			return nil
 		}
-		if hasAPIStatus(err, http.StatusConflict) {
+		if edgecdnx.IsConflict(err) {
 			if err := waitRetry(ctx, attempt); err != nil {
 				return err
 			}
@@ -321,10 +315,12 @@ func (p *provider) deleteEndpoint(ctx context.Context, zones []apiZone, record e
 }
 
 func (p *provider) getRecord(ctx context.Context, zone apiZone, record endpoint) (apiRecord, error) {
-	var current apiRecord
 	recordID := dnsEndpointResourceName(normalizeDNSName(record.DNSName), strings.ToUpper(record.RecordType))
-	err := p.api.request(ctx, http.MethodGet, p.api.endpointPath(p.projectID, zone.Metadata.Name, recordID), nil, &current)
-	return current, err
+	current, err := p.api.DNSRecords.Get(ctx, p.projectID, zone.Name, recordID)
+	if err != nil {
+		return apiRecord{}, err
+	}
+	return *current, nil
 }
 
 func (p *provider) toAPIRecord(zones []apiZone, record endpoint) (apiZone, apiRecordSpec, error) {
@@ -368,11 +364,37 @@ func translateAPIError(operation string, err error) error {
 	if err == nil {
 		return nil
 	}
-	var apiErr *apiError
-	if errors.As(err, &apiErr) {
-		return fmt.Errorf("%s: EdgeCDN-X API returned HTTP %d", operation, apiErr.status)
+	if status, ok := apiErrorStatus(err); ok {
+		return fmt.Errorf("%s: %w", operation, &apiStatusError{status: status})
 	}
 	return fmt.Errorf("%s: %w", operation, err)
+}
+
+func safeAPIError(err error) error {
+	if status, ok := apiErrorStatus(err); ok {
+		return &apiStatusError{status: status}
+	}
+	return err
+}
+
+type apiStatusError struct {
+	status int
+}
+
+func (e *apiStatusError) Error() string {
+	return fmt.Sprintf("EdgeCDN-X API returned HTTP %d", e.status)
+}
+
+func apiErrorStatus(err error) (int, bool) {
+	var safeErr *apiStatusError
+	if errors.As(err, &safeErr) {
+		return safeErr.status, true
+	}
+	var apiErr *edgecdnx.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode, true
+	}
+	return 0, false
 }
 
 func permanentError(message string, args ...any) error {

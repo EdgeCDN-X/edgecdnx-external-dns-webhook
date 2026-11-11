@@ -208,9 +208,11 @@ func writeProviderError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, permanentErr.Error())
 		return
 	}
-	var apiErr *apiError
-	if errors.As(err, &apiErr) {
-		writeError(w, apiErr.webhookStatus(), err.Error())
+	if status, ok := apiErrorStatus(err); ok {
+		if status >= http.StatusInternalServerError {
+			status = http.StatusBadGateway
+		}
+		writeError(w, status, err.Error())
 		return
 	}
 	writeError(w, http.StatusBadGateway, err.Error())
